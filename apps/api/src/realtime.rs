@@ -97,6 +97,19 @@ async fn handle_socket(socket: WebSocket, trip_id: String, state: RealtimeState)
     let mut receiver = sender.subscribe();
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
+    let sync_event = serde_json::to_string(&TripEvent {
+        event: "sync_required",
+        trip_id: trip_id.clone(),
+    })
+    .expect("serializing the trip sync event cannot fail");
+    if ws_sender
+        .send(Message::Text(sync_event.into()))
+        .await
+        .is_err()
+    {
+        state.remove_if_unused(&trip_id, &sender).await;
+        return;
+    }
 
     loop {
         tokio::select! {

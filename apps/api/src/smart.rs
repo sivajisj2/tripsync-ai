@@ -11,9 +11,11 @@ use sqlx::{FromRow, SqlitePool};
 use uuid::Uuid;
 
 use crate::{
+    auth::{self, AuthenticatedUser},
     discovery::{self, DiscoveryState, Place},
     metrics::ApiMetrics,
     realtime::RealtimeState,
+    trips::require_member,
 };
 
 const RATING_WEIGHT: f64 = 0.30;
@@ -27,6 +29,7 @@ pub struct SmartState {
     pub discovery: DiscoveryState,
     pub realtime: RealtimeState,
     pub metrics: Arc<ApiMetrics>,
+    pub app_origin: String,
 }
 
 type ApiError = (StatusCode, String);
@@ -312,9 +315,20 @@ async fn get_preferences(
 async fn set_preferences(
     State(state): State<SmartState>,
     Path(trip_id): Path<String>,
+    user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
     Json(input): Json<PreferenceRequest>,
 ) -> Result<Json<Vec<Preference>>, ApiError> {
     ensure_trip(&state.db, &trip_id).await?;
+    auth::verify_csrf(&headers, &user, &state.app_origin).map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            "Invalid session or CSRF token".into(),
+        )
+    })?;
+    require_member(&state.db, &trip_id, &user.id)
+        .await
+        .map_err(|(status, message)| (status, message.into()))?;
     let mut seen = std::collections::HashSet::new();
     if input.preferences.len() > discovery::CATEGORIES.len()
         || input.preferences.iter().any(|p| {
@@ -457,8 +471,19 @@ fn squared_distance(lat_a: f64, lon_a: f64, lat_b: f64, lon_b: f64) -> f64 {
 async fn generate_plan(
     State(state): State<SmartState>,
     Path(trip_id): Path<String>,
+    user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
 ) -> Result<(StatusCode, Json<SmartPlan>), ApiError> {
     ensure_trip(&state.db, &trip_id).await?;
+    auth::verify_csrf(&headers, &user, &state.app_origin).map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            "Invalid session or CSRF token".into(),
+        )
+    })?;
+    require_member(&state.db, &trip_id, &user.id)
+        .await
+        .map_err(|(status, message)| (status, message.into()))?;
     let preferences = sqlx::query_as::<_, Preference>(
         "SELECT category, weight FROM trip_preferences WHERE trip_id = ?",
     )
@@ -542,8 +567,19 @@ async fn get_plan(
 async fn reorder_plan(
     State(state): State<SmartState>,
     Path((trip_id, plan_id)): Path<(String, String)>,
+    user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
     Json(input): Json<ReorderPlanRequest>,
 ) -> Result<Json<SmartPlan>, ApiError> {
+    auth::verify_csrf(&headers, &user, &state.app_origin).map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            "Invalid session or CSRF token".into(),
+        )
+    })?;
+    require_member(&state.db, &trip_id, &user.id)
+        .await
+        .map_err(|(status, message)| (status, message.into()))?;
     let mut tx = state.db.begin().await.map_err(internal)?;
     let belongs = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM itinerary_plans WHERE id = ? AND trip_id = ?)",
@@ -602,7 +638,18 @@ async fn reorder_plan(
 async fn apply_plan(
     State(state): State<SmartState>,
     Path((trip_id, plan_id)): Path<(String, String)>,
+    user: AuthenticatedUser,
+    headers: axum::http::HeaderMap,
 ) -> Result<StatusCode, ApiError> {
+    auth::verify_csrf(&headers, &user, &state.app_origin).map_err(|_| {
+        (
+            StatusCode::FORBIDDEN,
+            "Invalid session or CSRF token".into(),
+        )
+    })?;
+    require_member(&state.db, &trip_id, &user.id)
+        .await
+        .map_err(|(status, message)| (status, message.into()))?;
     let mut tx = state.db.begin().await.map_err(internal)?;
     let belongs = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM itinerary_plans WHERE id = ? AND trip_id = ?)",
@@ -765,18 +812,39 @@ mod tests {
         sqlx::query("INSERT INTO trip_stops (id, trip_id, place_id, name, latitude, longitude, rating, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&second).bind(&trip_id).bind("b").bind("B").bind(1.0).bind(1.0).bind(5.0).bind("restaurants").execute(&db).await.unwrap();
         let realtime = RealtimeState::new(db.clone());
+        let owner_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO users (id, email, display_name, password_hash) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&owner_id)
+        .bind("planner@example.com")
+        .bind("Planner")
+        .bind("test-hash")
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO trip_members (trip_id, user_id, role) VALUES (?, ?, 'owner')")
+            .bind(&trip_id)
+            .bind(&owner_id)
+            .execute(&db)
+            .await
+            .unwrap();
         let state = SmartState {
             db: db.clone(),
             discovery: DiscoveryState::new("unused".into()),
             realtime,
             metrics: Arc::new(ApiMetrics::default()),
+            app_origin: "http://localhost:3000".into(),
         };
 
-        let (StatusCode::CREATED, Json(plan)) =
-            generate_plan(State(state.clone()), Path(trip_id.clone()))
-                .await
-                .unwrap()
-        else {
+        let (StatusCode::CREATED, Json(plan)) = generate_plan(
+            State(state.clone()),
+            Path(trip_id.clone()),
+            test_user(owner_id.clone()),
+            test_headers(),
+        )
+        .await
+        .unwrap() else {
             panic!("expected created plan")
         };
         assert_eq!(plan.items.len(), 2);
@@ -793,9 +861,14 @@ mod tests {
             .0
             .unwrap();
         assert_eq!(saved.id, plan.id);
-        apply_plan(State(state), Path((trip_id, plan.id)))
-            .await
-            .unwrap();
+        apply_plan(
+            State(state),
+            Path((trip_id, plan.id)),
+            test_user(owner_id),
+            test_headers(),
+        )
+        .await
+        .unwrap();
         let ordered = sqlx::query_as::<_, (String, Option<i64>)>(
             "SELECT id, itinerary_position FROM trip_stops ORDER BY itinerary_position",
         )
@@ -804,5 +877,25 @@ mod tests {
         .unwrap();
         assert_eq!(ordered.len(), 2);
         assert!(ordered.iter().all(|(_, position)| position.is_some()));
+    }
+
+    fn test_user(id: String) -> AuthenticatedUser {
+        AuthenticatedUser {
+            id,
+            email: "planner@example.com".into(),
+            display_name: "Planner".into(),
+            csrf_token: "csrf".into(),
+            session_hash: "unused".into(),
+        }
+    }
+
+    fn test_headers() -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ORIGIN,
+            axum::http::HeaderValue::from_static("http://localhost:3000"),
+        );
+        headers.insert("x-csrf-token", axum::http::HeaderValue::from_static("csrf"));
+        headers
     }
 }

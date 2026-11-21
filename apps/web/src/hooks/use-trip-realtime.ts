@@ -24,7 +24,6 @@ export function useTripRealtime(tripId: string | null, onUpdate: () => void) {
 
       socket.onopen = () => {
         retryCount = 0;
-        onUpdate();
       };
 
       socket.onmessage = ({ data }) => {
