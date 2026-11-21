@@ -63,6 +63,25 @@ async fn root() -> Json<ApiResponse> {
     })
 }
 
+async fn normalize_next_proxy_origin(
+    State(app_origin): State<String>,
+    mut request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    // Next's internal rewrite sends the browser request upstream with its
+    // server origin. Restore the public origin before CORS and CSRF checks.
+    if request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        == Some("http://localhost:3000")
+        && let Ok(value) = app_origin.parse()
+    {
+        request.headers_mut().insert(header::ORIGIN, value);
+    }
+    next.run(request).await
+}
+
 async fn concurrency_demo() -> Json<serde_json::Value> {
     let start = Instant::now();
 
@@ -183,6 +202,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(realtime_router)
         .merge(metrics_router)
         .fallback(|| async { (StatusCode::NOT_FOUND, "Route not found") })
+        .layer(middleware::from_fn_with_state(
+            app_origin,
+            normalize_next_proxy_origin,
+        ))
         .layer(cors)
         .layer(middleware::from_fn_with_state(
             api_metrics,

@@ -1,25 +1,50 @@
 # Deployment
 
-## Local Docker Compose
+## Public free demo with Cloudflare Quick Tunnel
 
-1. Copy `apps/api/.env.example` to `apps/api/.env`, then set `SERPAPI_KEY`; add Nexconn server credentials only if live chat is required.
-2. Run `cp compose.env.example .env`.
-3. Start: `docker compose -f docker-compose.yml -f docker-compose.local.yml up --build`.
-4. Web: `http://localhost:3000`; API readiness: `http://localhost:8080/ready`. The named `tripsync-data` volume persists SQLite.
+This runs the complete Next.js frontend, Rust/Axum API, WebSockets, SQLite, SerpApi integration, and Nexconn integration on one Ubuntu laptop. Cloudflare Quick Tunnel supplies a temporary HTTPS hostname at no charge. It is not permanent hosting: the hostname can change and the tunnel disappears when the process or laptop stops.
 
-The production Compose service exposes the API internally only. `docker-compose.local.yml` publishes ports for local WebSocket development and must not be used in production.
+Prerequisites: Docker Engine/Compose, outbound internet, `SERPAPI_KEY`, and (for live chat) `NEXCONN_APP_KEY` plus `NEXCONN_APP_SECRET`. Put server-only credentials in `apps/api/.env` or export them in the shell. The web container never receives the SerpApi key or Nexconn secret. If the existing env file uses `NEXT_PUBLIC_NEXCONN_APP_KEY`, the start script maps it to the server-side key for compatibility.
 
-## Production Compose
+Install `cloudflared` from Cloudflare's official instructions: <https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/>.
 
-Use a Linux VM/container host with a persistent disk and long-lived WebSocket support. A free-tier VM may be possible but is provider/region/quota dependent and is not guaranteed. Serverless/free web tiers that sleep, disallow WebSockets, or provide ephemeral filesystems are unsuitable for this single-node SQLite deployment. Persistent disks, outbound network access, DNS, and possibly billing are required; confirm provider pricing before provisioning.
+### Start
 
-1. Point a DNS name to the host and allow inbound TCP 80/443.
-2. Configure root `.env` (copied from `compose.env.example`) with real `SERPAPI_KEY`, `NEXCONN_APP_KEY`, `NEXCONN_APP_SECRET`, and the correct Nexconn data-center API base URL.
-3. Set `DOMAIN=travel.example.com`, `APP_ORIGIN=https://travel.example.com`, `NEXT_PUBLIC_API_URL=https://travel.example.com`, and `COOKIE_SECURE=true`.
-4. Build the web container with those public URL build args and run `docker compose --profile production up -d --build`.
-5. Verify `https://travel.example.com/health`, `/ready`, sign-in, a shared trip, a WebSocket reconnect, SerpApi, and Nexconn using two real users.
-6. Back up the persistent `/data/tripsync.db` volume and test restore/migration procedures.
+```bash
+./scripts/start-public-demo.sh
+```
 
-Caddy obtains/renews TLS certificates and proxies `/api/*` (including WebSockets) to Axum and other paths to Next.js. Configure `APP_ORIGIN` to the HTTPS origin and `COOKIE_SECURE=true`. Set `API_INTERNAL_URL=http://api:8080` for Next server rewrites; `NEXT_PUBLIC_API_URL` is the browser-visible HTTPS origin. Do not expose `NEXCONN_APP_SECRET` or `SERPAPI_KEY` to the web container.
+The script builds and starts the complete Compose stack, starts `cloudflared tunnel --url http://localhost:3000`, captures the assigned `https://*.trycloudflare.com` URL, then recreates only the API with that exact `APP_ORIGIN`. This makes CORS, secure cookies, same-origin `/api` rewrites, and `wss://` upgrades work on the dynamic hostname.
 
-No deployment was performed or publicly verified. This repository does not contain host credentials, DNS permissions, or Nexconn Console credentials.
+SQLite is stored in the named `tripsync-data` Docker volume. API and web are not published directly; only the tunnel reaches web on localhost:3000.
+
+### Stop, restart, inspect
+
+```bash
+./scripts/stop-public-demo.sh
+./scripts/start-public-demo.sh
+docker compose logs -f api web
+tail -f .public-demo/cloudflared.log
+cat .public-demo/url
+docker compose ps
+```
+
+Stopping preserves SQLite. Do not remove the volume unless you intentionally want to delete the data.
+
+### Local checks
+
+```bash
+cd apps/api && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test
+cd ../web && npm run lint && npm run test:unit && npx tsc --noEmit && npm run build
+```
+
+See `DEMO_CHECKLIST.md` for real two-browser verification. SerpApi and Nexconn require valid live credentials and are not replaced by mocks.
+
+### Limitations and troubleshooting
+
+- Quick Tunnel is temporary and best-effort; keep the Ubuntu laptop powered on, awake, online, and running Docker.
+- The public hostname changes after a new tunnel. Always use the URL printed by the start script.
+- If the API reports origin errors after a restart, stop and start again so it receives the current hostname.
+- If no URL appears, inspect `.public-demo/cloudflared.log` and confirm outbound HTTPS access.
+- If chat fails, verify Nexconn credentials, data-center API base URL, and permissions.
+- SQLite is single-node storage; back up the Docker volume before destructive maintenance.

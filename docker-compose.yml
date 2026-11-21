@@ -8,7 +8,7 @@ services:
       PORT: 8080
       APP_ENV: ${APP_ENV:-production}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to the public HTTPS origin}
       DATABASE_URL: sqlite:///data/tripsync.db
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
       SERPAPI_KEY: ${SERPAPI_KEY:-}
@@ -32,10 +32,12 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         API_INTERNAL_URL: http://api:8080
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
     depends_on:
       api:
         condition: service_healthy
+    ports:
+      - "3000:3000"
     expose:
       - "3000"
     restart: unless-stopped
@@ -44,7 +46,7 @@ services:
     image: caddy:2-alpine
     profiles: ["production"]
     environment:
-      DOMAIN: ${DOMAIN:?Set DOMAIN to a public DNS name}
+      DOMAIN: ${DOMAIN:-localhost}
     ports:
       - "80:80"
       - "443:443"

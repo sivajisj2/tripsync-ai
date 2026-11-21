@@ -6,10 +6,10 @@ export function useTripRealtime(tripId: string | null, onUpdate: () => void) {
   useEffect(() => {
     if (!tripId) return;
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-    const url = new URL(apiUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.pathname = `/api/trips/${encodeURIComponent(tripId)}/ws`;
+    // Keep the socket on the page's origin so Quick Tunnel and normal HTTPS
+    // deployments never bake a host-specific API URL into the browser bundle.
+    const url = new URL(`/api/trips/${encodeURIComponent(tripId)}/ws`, window.location.origin);
+    url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     url.search = "";
     url.hash = "";
 

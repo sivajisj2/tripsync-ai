@@ -1,11 +1,12 @@
-FROM rust:1.89-bookworm AS build
+# Rust 1.97-slim is available in the demo host's local Docker cache.
+FROM rust:1.97-slim AS build
 WORKDIR /src
 COPY apps/api/Cargo.toml apps/api/Cargo.lock ./
 COPY apps/api/src ./src
 COPY apps/api/migrations ./migrations
 RUN cargo build --release --locked
 
-FROM debian:bookworm-slim
+FROM rust:1.97-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* && mkdir -p /data && chown 10001:10001 /data
 WORKDIR /app
