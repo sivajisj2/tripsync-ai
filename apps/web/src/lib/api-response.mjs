@@ -1,7 +1,8 @@
 export async function parseApiResponse(response) {
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(body || `Request failed (HTTP ${response.status})`);
+    const isHtml = response.headers.get("content-type")?.includes("text/html") || /^\s*<!doctype html|^\s*<html/i.test(body);
+    throw new Error(isHtml ? `The server is temporarily unavailable (HTTP ${response.status}). Please retry in a moment.` : body || `Request failed (HTTP ${response.status})`);
   }
 
   if (response.status === 204 || response.status === 205) return undefined;

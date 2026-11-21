@@ -48,3 +48,24 @@ See `DEMO_CHECKLIST.md` for real two-browser verification. SerpApi and Nexconn r
 - If no URL appears, inspect `.public-demo/cloudflared.log` and confirm outbound HTTPS access.
 - If chat fails, verify Nexconn credentials, data-center API base URL, and permissions.
 - SQLite is single-node storage; back up the Docker volume before destructive maintenance.
+
+### Nexconn region and chat errors
+
+Set `NEXCONN_API_BASE_URL` in `apps/api/.env` to the region shown beside the selected app in the Nexconn console. Use the matching App Key and App Secret from that same application:
+
+- Singapore: `https://api.sg-light-api.com`
+- North America: `https://api.us-light-api.com`
+- Saudi Arabia: `https://api.sau-light-api.com`
+
+The API returns the matching SDK region with each chat session; the browser does not need a public secret or region environment variable. A key used against the wrong region can return HTTP 403. Group mappings are scoped to the App Key, so changing applications creates groups in the selected application. Messages in the previous provider application are not transferred.
+
+After configuration changes, rebuild before restarting:
+
+```bash
+docker compose --env-file .public-demo/compose.env build
+./scripts/start-public-demo.sh
+```
+
+A Cloudflare 502 can occur while the local frontend restarts. Check `docker compose --env-file .public-demo/compose.env ps` and `/ready`, then reload the page or use chat Retry. The chat mount remains available after errors so Retry can reconnect. Keep secrets out of screenshots and regenerate any exposed App Secret in the console, then update the private API env file.
+
+Chat UI can briefly return error `39005` after SDK sign-in while channel and offline-message sync completes. TripSync waits up to 30 seconds for that sync before reporting an error.

@@ -31,6 +31,16 @@ test("reports an empty API error with its HTTP status", async () => {
   );
 });
 
+test("shows a readable error instead of a Cloudflare HTML error page", async () => {
+  await assert.rejects(
+    parseApiResponse(new Response("<!DOCTYPE html><html>Bad gateway</html>", {
+      status: 502,
+      headers: { "content-type": "text/html" },
+    })),
+    { message: "The server is temporarily unavailable (HTTP 502). Please retry in a moment." },
+  );
+});
+
 test("does not hide malformed non-empty successful responses", async () => {
   await assert.rejects(
     parseApiResponse(new Response("{", { status: 200 })),

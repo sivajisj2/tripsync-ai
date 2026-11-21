@@ -164,10 +164,14 @@ impl NexconnState {
     }
 
     async fn ensure_group(&self, trip_id: &str) -> Result<String, (StatusCode, String)> {
+        let config = self.config.as_ref().ok_or_else(Self::unavailable)?;
+        // Remote groups belong to an App Key. Recreate the mapping if credentials change.
+        let channel_id = format!("TS{}{}", config.app_key, trip_id.replace('-', ""));
         if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT channel_id FROM nexconn_trip_groups WHERE trip_id = ?",
+            "SELECT channel_id FROM nexconn_trip_groups WHERE trip_id = ? AND channel_id = ?",
         )
         .bind(trip_id)
+        .bind(&channel_id)
         .fetch_optional(&self.db)
         .await
         .map_err(db_error)?
@@ -176,9 +180,10 @@ impl NexconnState {
         }
         let _guard = self.create_lock.lock().await;
         if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT channel_id FROM nexconn_trip_groups WHERE trip_id = ?",
+            "SELECT channel_id FROM nexconn_trip_groups WHERE trip_id = ? AND channel_id = ?",
         )
         .bind(trip_id)
+        .bind(&channel_id)
         .fetch_optional(&self.db)
         .await
         .map_err(db_error)?
@@ -210,20 +215,26 @@ impl NexconnState {
             session_hash: String::new(),
         };
         let _ = self.issue_token(&owner).await?;
-        let channel_id = format!("TS{}", trip_id.replace('-', ""));
         let group_name = trip.name.chars().take(64).collect::<String>();
         let _: Option<serde_json::Value> = self.post("/v4/group-channel/create", serde_json::json!({
             "channelId": channel_id, "name": group_name, "owner": nexconn_user_id(&trip.owner_id),
             "permissions": { "joinPerm": 3, "memInvitePerm": 0, "profilePerm": 0 }
         })).await?;
-        sqlx::query("INSERT INTO nexconn_trip_groups (trip_id, channel_id) VALUES (?, ?)")
+        let mut tx = self.db.begin().await.map_err(db_error)?;
+        sqlx::query("DELETE FROM nexconn_group_members WHERE trip_id = ?")
+            .bind(trip_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        sqlx::query("INSERT INTO nexconn_trip_groups (trip_id, channel_id) VALUES (?, ?) ON CONFLICT(trip_id) DO UPDATE SET channel_id = excluded.channel_id")
             .bind(trip_id)
             .bind(&channel_id)
-            .execute(&self.db)
+            .execute(&mut *tx)
             .await
             .map_err(db_error)?;
         sqlx::query("INSERT INTO nexconn_group_members (trip_id, user_id) VALUES (?, ?) ON CONFLICT(trip_id, user_id) DO NOTHING")
-            .bind(trip_id).bind(&trip.owner_id).execute(&self.db).await.map_err(db_error)?;
+            .bind(trip_id).bind(&trip.owner_id).execute(&mut *tx).await.map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
         Ok(channel_id)
     }
 
@@ -270,6 +281,7 @@ struct ApiEnvelope<T> {
 #[derive(Serialize)]
 struct ChatSessionResponse {
     app_key: String,
+    area_code: u8,
     user_id: String,
     group_id: String,
     token: String,
@@ -320,6 +332,21 @@ async fn chat_session(
         .clone();
     Ok(Json(ChatSessionResponse {
         app_key,
+        area_code: match reqwest::Url::parse(
+            &state
+                .config
+                .as_ref()
+                .ok_or_else(NexconnState::unavailable)?
+                .api_base,
+        )
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
+        {
+            Some("api.us-light-api.com" | "api-b.us-light-api.com") => 3,
+            Some("api.sau-light-api.com" | "api-b.sau-light-api.com") => 5,
+            _ => 2,
+        },
         user_id: nexconn_user_id(&user.id),
         group_id,
         token,

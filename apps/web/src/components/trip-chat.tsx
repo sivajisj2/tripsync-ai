@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, MessageCircle, RotateCw } from "lucide-react";
 import { apiRequest } from "@/lib/api-response.mjs";
 
-type ChatSession = { app_key: string; user_id: string; group_id: string; token: string };
+type ChatSession = { app_key: string; area_code: number; user_id: string; group_id: string; token: string };
 let initializedAppKey: string | null = null;
 
 async function fetchProfiles<T>(path: string, ids: string[]): Promise<T[]> {
@@ -38,13 +38,15 @@ export default function TripChat({ tripId, isMember, csrfToken }: { tripId: stri
           headers: { "x-csrf-token": csrfToken },
           signal: controller.signal,
         });
-        const [{ NCEngine, ConnectionStatusHandler, GroupChannelIdentifier, LogLevel }, { NCChatUIApplication }] = await Promise.all([
+        const [{ NCEngine, AreaCode, ConnectionStatusHandler, GroupChannelIdentifier, LogLevel }, { NCChatUIApplication }] = await Promise.all([
           import("@nexconn/chat"),
           import("@nexconn/chatui"),
         ]);
         if (destroyed || controller.signal.aborted) return;
         if (!initializedAppKey) {
-          NCEngine.initialize({ appKey: session.app_key, logLevel: LogLevel.WARN });
+          // The server derives the client region from the same API endpoint used to issue tokens.
+          const areaCode = session.area_code === 3 ? AreaCode.NA : session.area_code === 5 ? AreaCode.SA : AreaCode.SG;
+          NCEngine.initialize({ appKey: session.app_key, areaCode, logLevel: LogLevel.WARN });
           initializedAppKey = session.app_key;
         } else if (initializedAppKey !== session.app_key) {
           throw new Error("This browser session is already initialized for a different Nexconn app.");
@@ -74,7 +76,16 @@ export default function TripChat({ tripId, isMember, csrfToken }: { tripId: stri
         const result = await NCEngine.connect({ token: session.token });
         if (!result.isOk) throw new Error(`Nexconn sign-in failed (code ${result.code}). Retry or contact the app administrator.`);
         if (destroyed || controller.signal.aborted) return;
-        const opened = await app.openChannel(new GroupChannelIdentifier(session.group_id), true);
+        // A successful SDK connection precedes Chat UI's channel/offline sync.
+        // 39005 is CHANNEL_LIST_NOT_READY in the installed Chat UI SDK.
+        const channel = new GroupChannelIdentifier(session.group_id);
+        let opened = await app.openChannel(channel, true);
+        const deadline = Date.now() + 30_000;
+        while (!opened.isOk && opened.code === 39005 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          if (destroyed || controller.signal.aborted) return;
+          opened = await app.openChannel(channel, true);
+        }
         if (!opened.isOk) throw new Error(`Could not open this trip's chat group (code ${opened.code}).`);
         setConnecting(false);
         setStatus("Connected to your trip group");
@@ -97,5 +108,5 @@ export default function TripChat({ tripId, isMember, csrfToken }: { tripId: stri
   }, [tripId, isMember, csrfToken, retry]);
 
   if (!isMember) return <section className="chat-panel"><div className="chat-panel-heading"><MessageCircle size={18} /><div><h3>Trip group chat</h3><p>Join this trip to open its Nexconn group.</p></div></div></section>;
-  return <section className="chat-panel" aria-labelledby="trip-chat-title"><div className="chat-panel-heading"><MessageCircle size={18} /><div><h3 id="trip-chat-title">Trip group chat</h3><p>{connecting ? <><LoaderCircle size={13} className="spin" /> {status}</> : error ? "Connection needs attention" : status}</p></div>{error && <button type="button" className="chat-retry" onClick={() => setRetry((value) => value + 1)}><RotateCw size={14} /> Retry</button>}</div>{error ? <div className="chat-error" role="alert"><strong>Chat is unavailable</strong><p>{error}</p><p>Messages are provided by Nexconn. Configure the API server credentials to connect; TripSync does not store or simulate chat messages.</p></div> : <div className={`nexconn-chat-mount ${connecting ? "nexconn-chat-loading" : ""}`} ref={mountRef} aria-busy={connecting}>{connecting && <div className="chat-loading"><LoaderCircle className="spin" size={22} /><span>Opening your trip conversation…</span></div>}</div>}</section>;
+  return <section className="chat-panel" aria-labelledby="trip-chat-title"><div className="chat-panel-heading"><MessageCircle size={18} /><div><h3 id="trip-chat-title">Trip group chat</h3><p>{connecting ? <><LoaderCircle size={13} className="spin" /> {status}</> : error ? "Connection needs attention" : status}</p></div>{error && <button type="button" className="chat-retry" onClick={() => setRetry((value) => value + 1)}><RotateCw size={14} /> Retry</button>}</div>{error ? <div className="chat-error" role="alert"><strong>Chat is unavailable</strong><p>{error}</p><p>Messages are provided by Nexconn. Configure the API server credentials to connect; TripSync does not store or simulate chat messages.</p></div> : null}<div hidden={Boolean(error)} className={`nexconn-chat-mount ${connecting ? "nexconn-chat-loading" : ""}`} aria-busy={connecting}><div ref={mountRef} style={{ height: "100%", width: "100%" }} />{connecting && <div className="chat-loading"><LoaderCircle className="spin" size={22} /><span>Opening your trip conversation…</span></div>}</div></section>;
 }
