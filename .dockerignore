@@ -1,0 +1,12 @@
+.git
+.agents
+.next
+node_modules
+target
+**/.env
+**/.env.local
+**/tripsync.db*
+**/target
+**/node_modules
+**/.next
+skills-lock.json

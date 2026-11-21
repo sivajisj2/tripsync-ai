@@ -1,0 +1,63 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      APP_ENV: ${APP_ENV:-production}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: sqlite:///data/tripsync.db
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+      SERPAPI_KEY: ${SERPAPI_KEY:-}
+      NEXCONN_APP_KEY: ${NEXCONN_APP_KEY:-}
+      NEXCONN_APP_SECRET: ${NEXCONN_APP_SECRET:-}
+      NEXCONN_API_BASE_URL: ${NEXCONN_API_BASE_URL:-https://api.sg-light-api.com}
+    volumes:
+      - tripsync-data:/data
+    expose:
+      - "8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/ready"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_INTERNAL_URL: http://api:8080
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["production"]
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN to a public DNS name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+volumes:
+  tripsync-data:
+  caddy-data:
+  caddy-config:
