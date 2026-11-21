@@ -2,6 +2,14 @@
 
 TripSync helps small travel groups turn real destination discoveries into a shared, voteable itinerary. The product combines live SerpApi place discovery, trip-scoped Rust WebSockets, deterministic smart ranking, persistent SQLite plans, authenticated collaboration, and Nexconn's official Group Chat UI integration.
 
+## Live Demo
+
+**[Open TripSync AI](https://beneficial-michelle-ministry-scratch.trycloudflare.com)**
+
+The demo runs the complete Next.js frontend and Rust API, with authentication, persistent SQLite trips, live SerpApi discovery, real-time voting over WebSockets, smart itinerary planning, and Nexconn group chat. Live chat has been verified between two independent browser sessions, including replies and history after refresh.
+
+This is a free, temporary Cloudflare Quick Tunnel. The Ubuntu laptop and tunnel must stay running; restarting the tunnel can change the URL. See [deployment instructions](DEPLOYMENT.md) and the [demo checklist](DEMO_CHECKLIST.md).
+
 ## Features
 
 - Google Maps place discovery through SerpApi with an API-side cache.
@@ -15,7 +23,23 @@ TripSync helps small travel groups turn real destination discoveries into a shar
 
 ## Screenshots
 
-Screenshots are not included yet. Capture the Discover page, authenticated trip workspace, smart-plan preview, and configured Nexconn conversation after provider credentials are available.
+Captured from the running public application using dedicated demo accounts and real provider integrations.
+
+### Travel landing page
+
+![TripSync AI landing page](docs/screenshots/home.png)
+
+### Live destination discovery
+
+![Real Goa place results from SerpApi](docs/screenshots/discover.png)
+
+### Shared trip and voting
+
+![Goa trip workspace with real places and group votes](docs/screenshots/trip-workspace.png)
+
+### Nexconn group chat
+
+![Live Nexconn conversation between two demo users](docs/screenshots/group-chat.png)
 
 ## Local Setup
 
@@ -33,7 +57,7 @@ cd apps/api && cargo run
 cd apps/web && npm run dev
 ```
 
-Open `http://localhost:3000`. SQLite migrations run automatically at API startup. The browser API origin defaults to `http://localhost:8080`; Next rewrites `/api` to `API_INTERNAL_URL` (default `http://localhost:8080`).
+Open `http://localhost:3000`. SQLite migrations run automatically at API startup. Browser requests use same-origin `/api` URLs; Next rewrites them to `API_INTERNAL_URL` (default `http://localhost:8080` for local development).
 
 ## Architecture and Docs
 
@@ -44,4 +68,4 @@ Open `http://localhost:3000`. SQLite migrations run automatically at API startup
 - [PITCH.md](PITCH.md): problem, solution, provider value, and differentiation.
 - [SUBMISSION_CHECKLIST.md](SUBMISSION_CHECKLIST.md): final readiness checklist.
 
-The Rust API is in `apps/api`; the Next.js frontend is in `apps/web`. Nexconn messaging is not verified against a live Nexconn Console because provider credentials are not present in this environment. No public deployment is claimed.
+The Rust API is in `apps/api`; the Next.js frontend is in `apps/web`. Keep SerpApi and Nexconn secrets in the API environment; never commit them or include them in screenshots.
