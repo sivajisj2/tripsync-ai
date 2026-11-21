@@ -5,7 +5,13 @@ use axum::{
 };
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
@@ -14,7 +20,17 @@ pub struct DiscoveryState {
     pub key: String,
     pub cache: Cache<String, Vec<Place>>,
     pub limit: Arc<Semaphore>,
+    pub metrics: DiscoveryMetrics,
 }
+
+#[derive(Clone, Default)]
+pub struct DiscoveryMetrics {
+    pub hits: Arc<AtomicU64>,
+    pub misses: Arc<AtomicU64>,
+    pub errors: Arc<AtomicU64>,
+}
+
+pub const CATEGORIES: [&str; 4] = ["tourist attractions", "restaurants", "hotels", "cafes"];
 
 impl DiscoveryState {
     pub fn new(key: String) -> Self {
@@ -29,6 +45,7 @@ impl DiscoveryState {
                 .max_capacity(100)
                 .build(),
             limit: Arc::new(Semaphore::new(5)),
+            metrics: DiscoveryMetrics::default(),
         }
     }
 }
@@ -107,20 +124,40 @@ pub async fn search(
         ));
     }
 
-    let category = query
-        .category
-        .as_deref()
-        .unwrap_or("tourist attractions")
-        .trim();
+    let category = query.category.as_deref().unwrap_or(CATEGORIES[0]).trim();
 
-    let allowed = ["tourist attractions", "restaurants", "hotels", "cafes"];
-
-    if !allowed.contains(&category) {
+    if !CATEGORIES.contains(&category) {
         return Err((StatusCode::BAD_REQUEST, "Unsupported category".into()));
     }
 
+    let places = search_places(&state, city, category).await?;
+
+    Ok(Json(places))
+}
+
+pub async fn search_places(
+    state: &DiscoveryState,
+    city: &str,
+    category: &str,
+) -> Result<Vec<Place>, (StatusCode, String)> {
+    let city = city.trim();
+    if city.is_empty() || city.len() > 80 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "City must contain 1–80 characters".into(),
+        ));
+    }
+    if !CATEGORIES.contains(&category) {
+        return Err((StatusCode::BAD_REQUEST, "Unsupported category".into()));
+    }
     let cache_key = format!("{}:{}", city.to_lowercase(), category);
 
+    if let Some(cached) = state.cache.get(&cache_key).await {
+        state.metrics.hits.fetch_add(1, Ordering::Relaxed);
+        return Ok(cached);
+    }
+
+    state.metrics.misses.fetch_add(1, Ordering::Relaxed);
     let places = state
         .cache
         .try_get_with(cache_key, async {
@@ -153,6 +190,7 @@ pub async fn search(
         })
         .await
         .map_err(|e| {
+            state.metrics.errors.fetch_add(1, Ordering::Relaxed);
             tracing::error!("Discovery error: {e}");
             (
                 StatusCode::BAD_GATEWAY,
@@ -160,5 +198,5 @@ pub async fn search(
             )
         })?;
 
-    Ok(Json(places))
+    Ok(places)
 }

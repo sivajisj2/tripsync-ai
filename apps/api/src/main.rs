@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     http::{Method, StatusCode, header},
+    middleware,
     routing::get,
 };
 use serde::Serialize;
@@ -13,8 +14,10 @@ mod discovery;
 
 use discovery::DiscoveryState;
 
+mod metrics;
+mod realtime;
+mod smart;
 mod trips;
-
 #[derive(Serialize)]
 struct HealthResponse {
     service: &'static str,
@@ -81,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cors = CorsLayer::new()
         .allow_origin("http://localhost:3000".parse::<axum::http::HeaderValue>()?)
-        .allow_methods([Method::GET])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers([header::CONTENT_TYPE]);
 
     let db_options = SqliteConnectOptions::from_str("sqlite://tripsync.db")?
@@ -97,7 +100,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     sqlx::migrate!("./migrations").run(&db).await?;
 
-    let trip_router = trips::router(trips::TripState { db });
+    let realtime_state = realtime::RealtimeState::new(db.clone());
+    let realtime_router = realtime::router(realtime_state.clone());
+    let api_metrics = std::sync::Arc::new(metrics::ApiMetrics::default());
+    let metrics_router = Router::new().route(
+        "/metrics",
+        get(metrics::snapshot).with_state(metrics::MetricsState {
+            api: api_metrics.clone(),
+            discovery: discovery_state.metrics.clone(),
+        }),
+    );
+    let trip_router = trips::router(trips::TripState {
+        db: db.clone(),
+        realtime: realtime_state.clone(),
+    });
+    let smart_router = smart::router(smart::SmartState {
+        db,
+        discovery: discovery_state.clone(),
+        realtime: realtime_state,
+        metrics: api_metrics.clone(),
+    });
 
     let app = Router::new()
         .route("/", get(root))
@@ -108,8 +130,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             get(discovery::search).with_state(discovery_state),
         )
         .merge(trip_router)
+        .merge(smart_router)
+        .merge(realtime_router)
+        .merge(metrics_router)
         .fallback(|| async { (StatusCode::NOT_FOUND, "Route not found") })
         .layer(cors)
+        .layer(middleware::from_fn_with_state(
+            api_metrics,
+            metrics::observe,
+        ))
         .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));

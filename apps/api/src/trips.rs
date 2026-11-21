@@ -1,3 +1,4 @@
+use crate::realtime::RealtimeState;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -11,6 +12,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct TripState {
     pub db: SqlitePool,
+    pub realtime: RealtimeState,
 }
 
 #[derive(Serialize, FromRow)]
@@ -32,6 +34,10 @@ pub struct AddStop {
     place_id: String,
     name: String,
     address: Option<String>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    rating: Option<f64>,
+    category: Option<String>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -42,6 +48,10 @@ pub struct Stop {
     name: String,
     address: Option<String>,
     votes: i64,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    rating: Option<f64>,
+    category: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +116,16 @@ async fn add_stop(
     if !valid(&input.place_id, 255)
         || !valid(&input.name, 200)
         || input.address.as_ref().is_some_and(|a| a.len() > 500)
+        || input.category.as_ref().is_some_and(|c| c.len() > 80)
+        || input
+            .rating
+            .is_some_and(|rating| !(0.0..=5.0).contains(&rating))
+        || input
+            .latitude
+            .is_some_and(|latitude| !(-90.0..=90.0).contains(&latitude))
+        || input
+            .longitude
+            .is_some_and(|longitude| !(-180.0..=180.0).contains(&longitude))
     {
         return Err((StatusCode::BAD_REQUEST, "Invalid place details"));
     }
@@ -116,17 +136,20 @@ async fn add_stop(
 
     let result = sqlx::query(
         "INSERT INTO trip_stops
-         (id, trip_id, place_id, name, address)
-         VALUES (?, ?, ?, ?, ?)",
+         (id, trip_id, place_id, name, address, latitude, longitude, rating, category)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&trip_id)
     .bind(&input.place_id)
     .bind(&input.name)
     .bind(&input.address)
+    .bind(input.latitude)
+    .bind(input.longitude)
+    .bind(input.rating)
+    .bind(&input.category)
     .execute(&state.db)
     .await;
-
     match result {
         Ok(_) => {}
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
@@ -134,6 +157,8 @@ async fn add_stop(
         }
         Err(e) => return Err(internal_error(e)),
     }
+
+    state.realtime.publish(&trip_id, "stop_added").await;
 
     Ok((
         StatusCode::CREATED,
@@ -144,6 +169,10 @@ async fn add_stop(
             name: input.name,
             address: input.address,
             votes: 0,
+            latitude: input.latitude,
+            longitude: input.longitude,
+            rating: input.rating,
+            category: input.category,
         }),
     ))
 }
@@ -158,11 +187,12 @@ async fn list_stops(
         "SELECT s.id, s.trip_id, s.place_id,
                 s.name, s.address,
                 COUNT(v.voter_id) AS votes
+                , s.latitude, s.longitude, s.rating, s.category
          FROM trip_stops s
          LEFT JOIN votes v ON v.stop_id = s.id
          WHERE s.trip_id = ?
          GROUP BY s.id
-         ORDER BY votes DESC, s.added_at ASC",
+         ORDER BY COALESCE(s.itinerary_position, 2147483647), votes DESC, s.added_at ASC",
     )
     .bind(trip_id)
     .fetch_all(&state.db)
@@ -195,7 +225,10 @@ async fn vote(
     .await;
 
     match result {
-        Ok(r) if r.rows_affected() == 1 => Ok(StatusCode::CREATED),
+        Ok(r) if r.rows_affected() == 1 => {
+            state.realtime.publish(&trip_id, "vote_added").await;
+            Ok(StatusCode::CREATED)
+        }
         Ok(_) => Err((StatusCode::NOT_FOUND, "Stop not found")),
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             Err((StatusCode::CONFLICT, "Already voted"))
@@ -216,4 +249,169 @@ pub fn router(state: TripState) -> Router {
         .route("/api/trips/{id}/stops", post(add_stop).get(list_stops))
         .route("/api/trips/{id}/votes", post(vote))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::realtime::RealtimeState;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn test_state() -> TripState {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        TripState {
+            realtime: RealtimeState::new(db.clone()),
+            db,
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_vote_returns_conflict() {
+        let state = test_state().await;
+        let trip_id = Uuid::new_v4().to_string();
+        let stop_id = Uuid::new_v4().to_string();
+        let voter_id = Uuid::new_v4().to_string();
+
+        sqlx::query("INSERT INTO trips (id, name, destination) VALUES (?, ?, ?)")
+            .bind(&trip_id)
+            .bind("Test trip")
+            .bind("Test destination")
+            .execute(&state.db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO trip_stops (id, trip_id, place_id, name) VALUES (?, ?, ?, ?)")
+            .bind(&stop_id)
+            .bind(&trip_id)
+            .bind("place-1")
+            .bind("Test place")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let input = VoteRequest {
+            stop_id: stop_id.clone(),
+            voter_id: voter_id.clone(),
+        };
+        assert_eq!(
+            vote(State(state.clone()), Path(trip_id.clone()), Json(input),)
+                .await
+                .unwrap(),
+            StatusCode::CREATED
+        );
+
+        let duplicate = vote(
+            State(state),
+            Path(trip_id),
+            Json(VoteRequest { stop_id, voter_id }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(duplicate.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn concurrent_unique_votes_are_counted_once_and_duplicate_voters_conflict() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+        use std::{str::FromStr, time::Duration};
+
+        let file = std::env::temp_dir().join(format!("tripsync-votes-{}.db", Uuid::new_v4()));
+        let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", file.display()))
+            .unwrap()
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(10));
+        let db = SqlitePoolOptions::new()
+            .max_connections(8)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let state = TripState {
+            realtime: RealtimeState::new(db.clone()),
+            db: db.clone(),
+        };
+        let trip_id = Uuid::new_v4().to_string();
+        let stop_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO trips (id, name, destination) VALUES (?, ?, ?)")
+            .bind(&trip_id)
+            .bind("Concurrent test")
+            .bind("Test city")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO trip_stops (id, trip_id, place_id, name) VALUES (?, ?, ?, ?)")
+            .bind(&stop_id)
+            .bind(&trip_id)
+            .bind("place")
+            .bind("Place")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let writes = (0..100).map(|_| {
+            let state = state.clone();
+            let trip_id = trip_id.clone();
+            let stop_id = stop_id.clone();
+            tokio::spawn(async move {
+                vote(
+                    State(state),
+                    Path(trip_id),
+                    Json(VoteRequest {
+                        stop_id,
+                        voter_id: Uuid::new_v4().to_string(),
+                    }),
+                )
+                .await
+            })
+        });
+        let results = futures_util::future::join_all(writes).await;
+        assert!(
+            results
+                .into_iter()
+                .all(|result| result.unwrap() == Ok(StatusCode::CREATED))
+        );
+
+        let voter_id = Uuid::new_v4().to_string();
+        let duplicate_writes = (0..10).map(|_| {
+            let state = state.clone();
+            let trip_id = trip_id.clone();
+            let stop_id = stop_id.clone();
+            let voter_id = voter_id.clone();
+            tokio::spawn(async move {
+                vote(
+                    State(state),
+                    Path(trip_id),
+                    Json(VoteRequest { stop_id, voter_id }),
+                )
+                .await
+            })
+        });
+        let duplicates = futures_util::future::join_all(duplicate_writes).await;
+        let created = duplicates
+            .iter()
+            .filter(|result| matches!(result.as_ref().unwrap(), Ok(StatusCode::CREATED)))
+            .count();
+        let conflicts = duplicates
+            .iter()
+            .filter(|result| matches!(result.as_ref().unwrap(), Err((StatusCode::CONFLICT, _))))
+            .count();
+        assert_eq!((created, conflicts), (1, 9));
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM votes WHERE stop_id = ?")
+            .bind(&stop_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(count, 101);
+        db.close().await;
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(format!("{}-wal", file.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", file.display()));
+    }
 }
