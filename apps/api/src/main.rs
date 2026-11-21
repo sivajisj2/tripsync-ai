@@ -4,12 +4,16 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use std::str::FromStr;
 use std::{net::SocketAddr, time::Instant};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
 mod discovery;
 
 use discovery::DiscoveryState;
+
+mod trips;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -80,6 +84,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_methods([Method::GET])
         .allow_headers([header::CONTENT_TYPE]);
 
+    let db_options = SqliteConnectOptions::from_str("sqlite://tripsync.db")?
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+
+    let db = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(db_options)
+        .await?;
+
+    sqlx::migrate!("./migrations").run(&db).await?;
+
+    let trip_router = trips::router(trips::TripState { db });
+
     let app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
@@ -88,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "/api/places/search",
             get(discovery::search).with_state(discovery_state),
         )
+        .merge(trip_router)
         .fallback(|| async { (StatusCode::NOT_FOUND, "Route not found") })
         .layer(cors)
         .layer(TraceLayer::new_for_http());

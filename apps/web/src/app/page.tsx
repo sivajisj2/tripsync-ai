@@ -1,135 +1,92 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  ArrowRight, ArrowUpRight, Check, Clipboard, Coffee, Compass,
+  Hotel, Landmark, LoaderCircle, MapPin, Menu, Plus, Search, Share2,
+  Sparkles, Star, ThumbsUp, Utensils, Users, X,
+} from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
 
-type Place = {
-  id: string;
-  name: string;
-  address: string | null;
-  rating: number | null;
-  maps_url: string | null;
-};
+type Place = { id: string; name: string; address: string | null; rating: number | null; latitude?: number | null; longitude?: number | null; maps_url: string | null };
+type Trip = { id: string; name: string; destination: string; created_at: string };
+type Stop = { id: string; trip_id: string; place_id: string; name: string; address: string | null; votes: number };
+type Category = { label: string; value: string; icon: typeof Landmark };
+
+const categories: Category[] = [
+  { label: "Highlights", value: "tourist attractions", icon: Landmark },
+  { label: "Restaurants", value: "restaurants", icon: Utensils },
+  { label: "Hotels", value: "hotels", icon: Hotel },
+  { label: "Cafés", value: "cafes", icon: Coffee },
+];
+const cardImages = ["/travel-card-1.svg", "/travel-card-2.svg", "/travel-card-3.svg", "/travel-market.svg"];
+
+function CategoryPill({ category, active, onSelect }: { category: Category; active: boolean; onSelect: () => void }) {
+  const Icon = category.icon;
+  return <button type="button" onClick={onSelect} aria-pressed={active} className={`category-pill ${active ? "category-pill-active" : ""}`}><Icon size={16} strokeWidth={1.8} /><span>{category.label}</span></button>;
+}
+
+function PlaceCard({ place, index, onAdd, adding }: { place: Place; index: number; onAdd: () => void; adding: boolean }) {
+  return <article className="place-card group">
+    <div className="place-image" style={{ backgroundImage: `url(${cardImages[index % cardImages.length]})` }} role="img" aria-label={`Scenic view near ${place.name}`}><div className="image-shade" /><span className="place-type">{index % 2 === 0 ? "Worth a stop" : "Local favorite"}</span></div>
+    <div className="place-card-body"><div className="place-title-row"><h3>{place.name}</h3>{place.rating !== null && <span className="rating"><Star size={13} fill="currentColor" /> {place.rating.toFixed(1)}</span>}</div><p className="place-address"><MapPin size={14} /><span>{place.address || "Address unavailable"}</span></p><div className="place-actions"><button type="button" className="itinerary-link" onClick={onAdd} disabled={adding}>{adding ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}{adding ? "Adding" : "Add to itinerary"}</button>{place.maps_url && <a href={place.maps_url} target="_blank" rel="noopener noreferrer" className="map-link">Maps <ArrowUpRight size={14} /></a>}</div></div>
+  </article>;
+}
+
+function ResultsState({ loading, error, places }: { loading: boolean; error: string; places: Place[] }) {
+  if (loading) return <div className="state-panel" role="status"><LoaderCircle className="spin" size={24} /><div><strong>Curating your shortlist</strong><p>Finding the places that make this destination memorable.</p></div></div>;
+  if (error) return <div className="state-panel state-error" role="alert"><div className="state-icon"><X size={20} /></div><div><strong>We couldn&apos;t reach the guide</strong><p>{error}</p></div></div>;
+  if (!places.length) return <div className="empty-state"><div className="empty-icon"><Compass size={22} /></div><h3>Your next good idea starts here.</h3><p>Search a city above and we&apos;ll bring back real places worth adding to your trip.</p></div>;
+  return null;
+}
+
+function CreateTripDialog({ open, busy, error, onClose, onCreate }: { open: boolean; busy: boolean; error: string; onClose: () => void; onCreate: (name: string, destination: string) => void }) {
+  const [name, setName] = useState("");
+  const [destination, setDestination] = useState("");
+  if (!open) return null;
+  function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); onCreate(name.trim(), destination.trim()); }
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><section className="trip-dialog" role="dialog" aria-modal="true" aria-labelledby="create-trip-title"><button type="button" className="dialog-close" onClick={onClose} aria-label="Close create trip dialog"><X size={19} /></button><p className="eyebrow eyebrow-dark">A new chapter</p><h2 id="create-trip-title">Create a trip<br /><i>to look forward to.</i></h2><p className="dialog-intro">Give your shared itinerary a home. You can add real discoveries as you go.</p><form onSubmit={submit}><label htmlFor="trip-name">Trip name<input id="trip-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="A long weekend in..." maxLength={100} required /></label><label htmlFor="trip-destination">Destination<input id="trip-destination" value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="City, region, or country" maxLength={100} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button type="submit" className="dialog-submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}{busy ? "Creating trip" : "Create trip"}</button></form></section></div>;
+}
+
+function TripWorkspace({ trips, activeTrip, stops, loading, error, onSelect, onCreate, onVote, onShare }: { trips: Trip[]; activeTrip: Trip | null; stops: Stop[]; loading: boolean; error: string; onSelect: (trip: Trip) => void; onCreate: () => void; onVote: (stop: Stop) => void; onShare: () => void }) {
+  return <section className="trip-workspace" id="trips"><div className="workspace-top"><div><p className="eyebrow eyebrow-dark">Your travel desk</p><h2>My <i>trips.</i></h2></div><button type="button" className="forest-button" onClick={onCreate}><Plus size={16} /> Create trip</button></div>{!trips.length ? <div className="workspace-empty"><div className="empty-icon"><Compass size={22} /></div><h3>Nothing on the calendar yet.</h3><p>Create a trip, then start collecting places you want to remember.</p><button type="button" className="text-link" onClick={onCreate}>Create your first trip <ArrowRight size={15} /></button></div> : <div className="workspace-grid"><aside className="trip-list" aria-label="Your trips"><div className="trip-list-label">Saved trips <span>{trips.length}</span></div>{trips.map((trip) => <button type="button" key={trip.id} className={`trip-list-item ${activeTrip?.id === trip.id ? "trip-list-item-active" : ""}`} onClick={() => onSelect(trip)}><span>{trip.name}</span><small>{trip.destination}</small></button>)}</aside><div className="trip-detail">{activeTrip ? <><div className="trip-detail-heading"><div><span className="trip-destination"><MapPin size={14} /> {activeTrip.destination}</span><h3>{activeTrip.name}</h3></div><button type="button" className="share-button" onClick={onShare}><Share2 size={16} /> Share trip</button></div><div className="share-note"><Users size={16} /><span>Invite your travel crew with a link. Voting uses a temporary browser ID, not secure authentication.</span></div>{loading ? <div className="state-panel compact" role="status"><LoaderCircle className="spin" size={21} /><div><strong>Loading itinerary</strong><p>Bringing your saved places back.</p></div></div> : error ? <div className="state-panel state-error compact" role="alert"><div className="state-icon"><X size={18} /></div><div><strong>Couldn&apos;t load this trip</strong><p>{error}</p></div></div> : stops.length ? <div className="stops-list">{stops.map((stop) => <article className="stop-row" key={stop.id}><div className="stop-number">{String(stops.indexOf(stop) + 1).padStart(2, "0")}</div><div className="stop-copy"><h4>{stop.name}</h4><p>{stop.address || "Address unavailable"}</p></div><button type="button" className="vote-button" onClick={() => onVote(stop)} aria-label={`Vote for ${stop.name}`}><ThumbsUp size={15} /> <span>{stop.votes}</span></button></article>)}</div> : <div className="itinerary-empty"><Landmark size={23} /><h4>Your itinerary is still taking shape.</h4><p>Add places from Discover, then vote for what the group should do first.</p></div>}</> : <div className="itinerary-empty"><Compass size={23} /><h4>Select a trip to open its workspace.</h4></div>}</div></div>}</section>;
+}
 
 export default function Home() {
-  const [city, setCity] = useState("Mysuru Karnataka");
+  const [city, setCity] = useState("");
   const [category, setCategory] = useState("tourist attractions");
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
+  const [stops, setStops] = useState<Stop[]>([]);
+  const [stopsLoading, setStopsLoading] = useState(false);
+  const [tripError, setTripError] = useState("");
+  const [voterId] = useState(() => { if (typeof window === "undefined") return ""; const stored = localStorage.getItem("tripsync-demo-voter"); const id = stored || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`); if (!stored) localStorage.setItem("tripsync-demo-voter", id); return id; });
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [addingPlace, setAddingPlace] = useState("");
+  const [shareCopied, setShareCopied] = useState(false);
 
-  async function searchPlaces() {
-    setLoading(true);
-    setError("");
+  async function request<T>(path: string, options?: RequestInit): Promise<T> { const response = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json", ...(options?.headers || {}) }, ...options }); if (!response.ok) { const message = await response.text(); throw new Error(message || `Request failed (HTTP ${response.status})`); } return response.status === 204 ? (undefined as T) : response.json() as Promise<T>; }
+  async function loadStops(trip: Trip) { setStopsLoading(true); setTripError(""); try { setStops(await request<Stop[]>(`/trips/${trip.id}/stops`)); } catch (err) { setTripError(err instanceof Error ? err.message : "Could not load itinerary"); } finally { setStopsLoading(false); } }
+  async function selectTrip(trip: Trip) { setActiveTrip(trip); window.history.replaceState(null, "", `?trip=${encodeURIComponent(trip.id)}#trips`); await loadStops(trip); }
+  async function loadSavedTrips() { const ids = JSON.parse(localStorage.getItem("tripsync-trip-ids") || "[]") as string[]; const saved = await Promise.all(ids.map(async (id) => { try { return await request<Trip>(`/trips/${id}`); } catch { return null; } })); const valid = saved.filter((trip): trip is Trip => trip !== null); setTrips(valid); const queryTrip = new URLSearchParams(window.location.search).get("trip"); const selected = valid.find((trip) => trip.id === queryTrip) || valid[0]; if (selected) { setActiveTrip(selected); await loadStops(selected); } }
+  // Load persisted trip IDs once the browser is available.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const timer = window.setTimeout(() => { void loadSavedTrips(); }, 0); return () => window.clearTimeout(timer); }, []);
 
-    try {
-      const params = new URLSearchParams({ city, category });
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/places/search?${params}`
-      );
+  async function searchPlaces(event?: FormEvent<HTMLFormElement>) { event?.preventDefault(); const destination = city.trim(); if (!destination) return; setLoading(true); setError(""); try { const params = new URLSearchParams({ city: destination, category }); setPlaces(await request<Place[]>(`/places/search?${params.toString()}`)); } catch (err) { setPlaces([]); setError(err instanceof Error ? err.message : "Unknown error"); } finally { setLoading(false); } }
+  async function createTrip(name: string, destination: string) { if (!name || !destination) return; setCreating(true); setCreateError(""); try { const trip = await request<Trip>("/trips", { method: "POST", body: JSON.stringify({ name, destination }) }); const ids = JSON.parse(localStorage.getItem("tripsync-trip-ids") || "[]") as string[]; localStorage.setItem("tripsync-trip-ids", JSON.stringify([...new Set([trip.id, ...ids])])); setTrips((current) => [trip, ...current.filter((item) => item.id !== trip.id)]); setDialogOpen(false); await selectTrip(trip); document.getElementById("trips")?.scrollIntoView({ behavior: "smooth" }); } catch (err) { setCreateError(err instanceof Error ? err.message : "Could not create trip"); } finally { setCreating(false); } }
+  async function addToItinerary(place: Place) { if (!activeTrip) { setDialogOpen(true); return; } setAddingPlace(place.id); setTripError(""); try { await request(`/trips/${activeTrip.id}/stops`, { method: "POST", body: JSON.stringify({ place_id: place.id, name: place.name, address: place.address }) }); await loadStops(activeTrip); document.getElementById("trips")?.scrollIntoView({ behavior: "smooth" }); } catch (err) { setTripError(err instanceof Error ? err.message : "Could not add this place"); } finally { setAddingPlace(""); } }
+  async function vote(stop: Stop) { if (!activeTrip || !voterId) return; setTripError(""); try { await request(`/trips/${activeTrip.id}/votes`, { method: "POST", body: JSON.stringify({ stop_id: stop.id, voter_id: voterId }) }); await loadStops(activeTrip); } catch (err) { const message = err instanceof Error ? err.message : "Could not record vote"; setTripError(message.includes("Already voted") ? "You already voted for this place from this browser." : message); } }
+  async function shareTrip() { if (!activeTrip) return; const url = `${window.location.origin}/?trip=${encodeURIComponent(activeTrip.id)}#trips`; await navigator.clipboard?.writeText(url); setShareCopied(true); window.setTimeout(() => setShareCopied(false), 2200); }
 
-      if (!response.ok) {
-        throw new Error(`Search failed: HTTP ${response.status}`);
-      }
-
-      setPlaces((await response.json()) as Place[]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    // Search is user-triggered to conserve sponsor credits.
-  }, []);
-
-  return (
-    <main className="min-h-screen bg-slate-950 px-6 py-12 text-white">
-      <div className="mx-auto max-w-6xl">
-        <p className="text-emerald-400">
-          SerpApi + Nexconn + Rust
-        </p>
-
-        <h1 className="mt-3 text-5xl font-bold">
-          TripSync AI
-        </h1>
-
-        <p className="mt-4 text-slate-400">
-          Discover real places. Plan together.
-        </p>
-
-        <div className="mt-10 flex flex-wrap gap-3">
-          <input
-            value={city}
-            onChange={(e) => setCity(e.target.value)}
-            placeholder="Enter destination"
-            className="min-w-60 flex-1 rounded-xl border border-slate-700 bg-slate-900 p-3"
-          />
-
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
-            className="rounded-xl border border-slate-700 bg-slate-900 p-3"
-          >
-            <option value="tourist attractions">Attractions</option>
-            <option value="restaurants">Restaurants</option>
-            <option value="hotels">Hotels</option>
-            <option value="cafes">Cafes</option>
-          </select>
-
-          <button
-            onClick={searchPlaces}
-            disabled={loading || !city.trim()}
-            className="rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 disabled:opacity-50"
-          >
-            {loading ? "Searching..." : "Discover Places"}
-          </button>
-        </div>
-
-        {error && (
-          <p className="mt-5 text-red-400">{error}</p>
-        )}
-
-        <div className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {places.map((place, index) => (
-            <article
-              key={`${place.id}-${index}`}
-              className="rounded-2xl border border-slate-700 bg-slate-900 p-5"
-            >
-              <h2 className="text-lg font-semibold">
-                {place.name}
-              </h2>
-
-              <p className="mt-2 text-sm text-slate-400">
-                {place.address || "Address unavailable"}
-              </p>
-
-              {place.rating !== null && (
-                <p className="mt-3 text-amber-400">
-                  Rating: {place.rating}
-                </p>
-              )}
-
-              {place.maps_url && (
-                <a
-                  href={place.maps_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-4 inline-block text-emerald-400"
-                >
-                  View on Google Maps
-                </a>
-              )}
-            </article>
-          ))}
-        </div>
-
-        {!loading && !error && places.length === 0 && (
-          <p className="mt-10 text-slate-500">
-            Search for a destination to discover places.
-          </p>
-        )}
-      </div>
-    </main>
-  );
+  return <main className="site-shell"><nav className="site-nav" aria-label="Main navigation"><a href="#top" className="brand" aria-label="TripSync AI home"><span className="brand-mark"><Compass size={19} strokeWidth={2.1} /></span><span>TripSync <em>AI</em></span></a><div className={`nav-links ${menuOpen ? "nav-links-open" : ""}`}><a className="nav-link nav-link-active" href="#discover" onClick={() => setMenuOpen(false)}>Discover</a><a className="nav-link" href="#trips" onClick={() => setMenuOpen(false)}>My trips</a><a className="nav-link" href="#how-it-works" onClick={() => setMenuOpen(false)}>How it works</a><button type="button" className="nav-close" aria-label="Close menu" onClick={() => setMenuOpen(false)}><X size={20} /></button></div><div className="nav-actions"><span className="nav-sign-in">Sign in</span><button type="button" className="nav-join" onClick={() => setDialogOpen(true)}>Join free <ArrowRight size={15} /></button><button type="button" className="menu-button" aria-label="Open menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={21} /></button></div></nav>
+    <section className="hero" id="top"><div className="hero-copy"><p className="eyebrow"><Sparkles size={14} /> The considered way to travel</p><h1>Go somewhere<br /><span>worth remembering.</span></h1><p className="hero-description">Discover the places, rituals, and little detours that turn a trip into a story worth telling.</p></div><div className="hero-photo" role="img" aria-label="Aerial view of a tropical coast"><div className="hero-photo-caption"><span>01 / 04</span><span>Somewhere beautiful</span></div></div></section>
+    <section className="discover-section" id="discover"><div className="section-heading"><div><p className="eyebrow eyebrow-dark">Start with a feeling</p><h2>Find your next <i>favorite</i> place.</h2></div><p className="section-note">Real recommendations from Google Maps,<br className="desktop-only" /> shaped around where you want to go.</p></div><form className="search-bar" onSubmit={searchPlaces}><div className="search-field"><MapPin size={19} /><label htmlFor="destination">Where to?</label><input id="destination" value={city} onChange={(event) => setCity(event.target.value)} placeholder="City, region, or country" autoComplete="off" /></div><button type="submit" className="search-submit" disabled={loading || !city.trim()}>{loading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}<span>{loading ? "Searching" : "Discover"}</span></button></form><div className="category-row" aria-label="Place categories">{categories.map((item) => <CategoryPill key={item.value} category={item} active={category === item.value} onSelect={() => setCategory(item.value)} />)}</div><ResultsState loading={loading} error={error} places={places} />{places.length > 0 && !loading && <div className="results-section"><div className="results-heading"><div><p className="eyebrow eyebrow-dark">Curated for you</p><h2>Places to linger in <i>{city.trim()}</i></h2></div><span className="result-count">{places.length} discoveries</span></div><div className="places-grid">{places.map((place, index) => <PlaceCard key={`${place.id}-${index}`} place={place} index={index} adding={addingPlace === place.id} onAdd={() => void addToItinerary(place)} />)}</div></div>}</section>
+    <TripWorkspace trips={trips} activeTrip={activeTrip} stops={stops} loading={stopsLoading} error={tripError} onSelect={(trip) => void selectTrip(trip)} onCreate={() => { setCreateError(""); setDialogOpen(true); }} onVote={(stop) => void vote(stop)} onShare={() => void shareTrip()} />
+    <section className="editorial-strip" id="how-it-works"><div className="strip-image" role="img" aria-label="Travelers walking through a market" /><div className="strip-copy"><p className="eyebrow eyebrow-dark">Travel, in good company</p><h2>Better together,<br /><i>by design.</i></h2><p>Keep the group chat for catching up. TripSync gives everyone a shared place to discover, discuss, and decide.</p><a href="#discover" className="text-link">Start planning together <ArrowUpRight size={15} /></a></div><div className="strip-stat"><Users size={19} /><span>Made for the<br /><strong>whole crew</strong></span></div></section><footer className="site-footer"><a href="#top" className="brand"><span className="brand-mark"><Compass size={18} strokeWidth={2.1} /></span><span>TripSync <em>AI</em></span></a><p>Thoughtful travel, made simple.</p><span className="footer-meta">© 2025 TripSync AI</span></footer><CreateTripDialog open={dialogOpen} busy={creating} error={createError} onClose={() => setDialogOpen(false)} onCreate={(name, destination) => void createTrip(name, destination)} />{shareCopied && <div className="toast" role="status"><Check size={16} /> Share link copied <Clipboard size={14} /></div>}</main>;
 }
