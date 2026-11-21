@@ -5,11 +5,11 @@ use axum::{
 };
 use serde::Serialize;
 use std::{net::SocketAddr, time::Instant};
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
+mod discovery;
+
+use discovery::DiscoveryState;
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -69,6 +69,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    dotenvy::dotenv().ok();
+
+    let serpapi_key = std::env::var("SERPAPI_KEY").expect("SERPAPI_KEY must be configured");
+
+    let discovery_state = DiscoveryState::new(serpapi_key);
+
     let cors = CorsLayer::new()
         .allow_origin("http://localhost:3000".parse::<axum::http::HeaderValue>()?)
         .allow_methods([Method::GET])
@@ -78,6 +84,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(root))
         .route("/health", get(health))
         .route("/api/demo/concurrency", get(concurrency_demo))
+        .route(
+            "/api/places/search",
+            get(discovery::search).with_state(discovery_state),
+        )
         .fallback(|| async { (StatusCode::NOT_FOUND, "Route not found") })
         .layer(cors)
         .layer(TraceLayer::new_for_http());
